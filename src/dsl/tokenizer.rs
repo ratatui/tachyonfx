@@ -161,7 +161,7 @@ fn keyword<'a>() -> impl StrParser<'a, Token<'a>> {
 
 fn float_literal<'a>() -> impl StrParser<'a, Token<'a>> {
     let sign = attempt(succeed(or!(skip!('-'), skip!('+'))));
-    let plain = float::<f32, char, &str, ()>();
+    let plain = float::<f32, _, _, &str, ()>();
     token(TokenKind::FloatLiteral, get_parsed(right!(sign, plain)))
 }
 
