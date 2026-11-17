@@ -155,44 +155,59 @@ impl DslParseError {
     #[must_use]
     pub fn error_text(&self) -> String {
         let lines: Vec<&str> = self.input.lines().collect();
+        let start_line = self.location.start_line;
+        let end_line = self.location.end_line;
 
-        if self.location.start_line == self.location.end_line {
-            // Single line error
-            let line = lines
-                .get(self.location.start_line - 1)
-                .unwrap_or(&"");
-            let start_col = self.location.start_column.saturating_sub(1);
-            let end_col = self.location.end_column.min(line.len() + 1);
-
-            line[start_col..end_col].to_string()
-        } else {
-            // Multi-line error
-            let mut result = String::new();
-
-            for line_num in self.location.start_line..=self.location.end_line {
-                if line_num > self.location.start_line {
-                    result.push('\n');
-                }
-
-                if let Some(line) = lines.get(line_num - 1) {
-                    let start_col = if line_num == self.location.start_line {
-                        self.location.start_column.saturating_sub(1)
-                    } else {
-                        0
-                    };
-
-                    let end_col = if line_num == self.location.end_line {
-                        self.location.end_column.min(line.len() + 1)
-                    } else {
-                        line.len()
-                    };
-
-                    result.push_str(&line[start_col..end_col]);
-                }
-            }
-
-            result
+        // Columns are 1-based char positions and `end_column` is one past the
+        // last char of the span, so the half-open char range is
+        // `[start_column - 1, end_column - 1)`.
+        if start_line == end_line {
+            let line = lines.get(start_line - 1).copied().unwrap_or("");
+            return char_slice(
+                line,
+                self.location.start_column.saturating_sub(1),
+                self.location.end_column.saturating_sub(1),
+            )
+            .to_string();
         }
+
+        let mut result = String::new();
+        for line_num in start_line..=end_line {
+            if line_num > start_line {
+                result.push('\n');
+            }
+            if let Some(line) = lines.get(line_num - 1) {
+                let start = if line_num == start_line {
+                    self.location.start_column.saturating_sub(1)
+                } else {
+                    0
+                };
+                let end = if line_num == end_line {
+                    self.location.end_column.saturating_sub(1)
+                } else {
+                    usize::MAX
+                };
+                result.push_str(char_slice(line, start, end));
+            }
+        }
+        result
+    }
+}
+
+/// Returns the substring of `s` covering char indices `[start, end)`.
+/// Indices are clamped to the string, so this never panics.
+fn char_slice(s: &str, start: usize, end: usize) -> &str {
+    let char_count = s.chars().count();
+    let byte_at = |char_idx: usize| {
+        s.char_indices()
+            .nth(char_idx.min(char_count))
+            .map_or(s.len(), |(i, _)| i)
+    };
+    let (start_b, end_b) = (byte_at(start), byte_at(end));
+    if start_b >= end_b {
+        ""
+    } else {
+        &s[start_b..end_b]
     }
 }
 
@@ -227,5 +242,40 @@ impl fmt::Display for DslParseError {
 impl error::Error for DslParseError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         Some(&self.source)
+    }
+}
+
+#[cfg(test)]
+mod error_text_tests {
+    use crate::dsl::EffectDsl;
+
+    fn error_text_of(src: &str) -> String {
+        match EffectDsl::new().compiler().compile(src) {
+            Ok(_) => panic!("expected a parse error for {src:?}"),
+            Err(e) => e.error_text(),
+        }
+    }
+
+    #[test]
+    fn error_text_ascii_single_line() {
+        assert_eq!(error_text_of("fx::dissolve(300).with_area(nowhere)"), "nowhere");
+    }
+
+    #[test]
+    fn error_text_non_ascii_before_error_does_not_panic() {
+        let text = error_text_of("fx::dissolve(300).with_area(/*……………*/nowhere)");
+        assert_eq!(text, "nowhere");
+    }
+
+    #[test]
+    fn error_text_error_at_end_of_line_does_not_panic() {
+        // Must not panic; the exact text is whatever the span covers.
+        let _ = error_text_of("fx::dissolve(");
+    }
+
+    #[test]
+    fn error_text_multi_line_non_ascii() {
+        let text = error_text_of("fx::sleep(1)\n.with_area(/*é*/nowhere)");
+        assert_eq!(text, "nowhere");
     }
 }
