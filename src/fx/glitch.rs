@@ -154,11 +154,11 @@ impl Shader for Glitch {
                         c.set_char(if v > 0 {
                             c.symbol().as_bytes()[0]
                                 .saturating_add(v as u8)
-                                .clamp(32, 255) as char
+                                .clamp(32, 126) as char
                         } else {
                             c.symbol().as_bytes()[0]
                                 .saturating_sub(v.unsigned_abs())
-                                .clamp(32, 255) as char
+                                .clamp(32, 126) as char
                         });
                     },
                     _ => {},
@@ -212,5 +212,48 @@ impl Shader for Glitch {
         use crate::dsl::DslError;
 
         Err(DslError::UnsupportedEffect { name: self.name().to_compact_string() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui_core::{buffer::Buffer, layout::Rect, style::Style};
+
+    use crate::{fx::Glitch, Duration, Shader, SimpleRng};
+
+    // Regression test for https://github.com/ratatui/tachyonfx/issues/106:
+    // `ChangeCharByValue` must keep the shifted byte within printable ASCII.
+    // Shifting characters near the top of printable ASCII (e.g. `~` + 1) used to
+    // clamp to 255, which can produce DEL (0x7F) or C1 control characters. Those
+    // make ratatui-core's `cell_width` fail its debug assertion in `Buffer::diff`.
+    #[test]
+    fn change_char_by_value_stays_printable_ascii() {
+        let area = Rect::new(0, 0, 1, 1);
+        let mut glitch = Glitch::builder()
+            .cell_glitch_ratio(1.0)
+            .action_start_delay_ms(0..1)
+            .action_ms(10..20)
+            .rng(SimpleRng::new(1))
+            .build();
+
+        for _ in 0..1000 {
+            let mut buf = Buffer::empty(area);
+            buf.set_string(0, 0, "~", Style::new());
+            glitch.process(Duration::from_millis(16), &mut buf, area);
+
+            let symbol = buf[(0, 0)].symbol();
+            for ch in symbol.chars() {
+                assert!(
+                    !ch.is_control(),
+                    "glitch produced a control character {:?} (U+{:04X})",
+                    ch,
+                    ch as u32
+                );
+            }
+
+            // Buffer::diff debug-asserts against control characters; this is the
+            // exact panic reported in the issue.
+            let _ = Buffer::empty(area).diff(&buf);
+        }
     }
 }
